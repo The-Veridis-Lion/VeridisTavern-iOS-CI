@@ -87,24 +87,49 @@ export function pageReadiness(acceptOnboarding) {
         stage: ['shell', 'core', 'full'].includes(stage) ? stage : 'unknown', onboarding, acceptedOnboarding };
 }
 
+// Identify the installed frontend independently of Xcode's native version metadata.
+export function observeBlockTagScans(converter, showdown) {
+    const helper = showdown.helper;
+    const original = helper.regexIndexOf;
+    let scans = 0;
+    helper.regexIndexOf = function (...args) {
+        if (args[1]?.source?.startsWith('^ {0,3}(<')) scans++;
+        return Reflect.apply(original, this, args);
+    };
+    try {
+        converter.makeHtml('A picture of a <q>small bridge</q> hangs by the door.');
+        const inlineScans = scans;
+        scans = 0;
+        converter.makeHtml('<section>Positive block control.</section>');
+        return { inlineScans, blockControlScans: scans };
+    } finally {
+        helper.regexIndexOf = original;
+    }
+}
+
 // Runs inside the existing main WKWebView on the booted Simulator.
-async function pageBenchmark(variant, makeInput, measure, warmupCount, sampleCount) {
+async function pageBenchmark(makeInput, measure, observeScans, warmupCount, sampleCount) {
     const core = globalThis.__TAURI__?.core ?? globalThis.__TAURI_INTERNALS__;
     if (globalThis.__TAURITAVERN_HOST__?.platform !== 'ios' || document.visibilityState !== 'visible' ||
         typeof core?.invoke !== 'function') throw Error('native-ios-webview-unavailable');
     const native = await core.invoke('get_client_version');
-    const expected = variant === 'M2' ? /^m2-[0-9a-f]{9}$/ : /^after-[0-9a-f]{9}$/;
-    if (!expected.test(native?.gitRevision)) throw Error('unexpected-native-build');
+    if (typeof native?.tauriVersion !== 'string' || !native.tauriVersion || typeof native?.agent !== 'string' ||
+        !native.agent.endsWith(':TauriTavern')) throw Error('native-version-unavailable');
     const asset = path => new URL(path, location.href).href;
     const [app, lib] = await Promise.all([import(asset('/script.js')), import(asset('/lib.js'))])
         .catch(() => { throw Error('bundled-markdown-assets-unavailable'); });
     if (typeof app.converter?.makeHtml !== 'function') throw Error('converter-not-ready');
+    const variantWitness = observeScans(app.converter, lib.showdown);
+    const revision = typeof native.gitRevision === 'string' ? native.gitRevision : '';
+    const nativeRevisionKind = /^(?:m2|after)-[0-9a-f]{9}$/.test(revision) ? 'variant-label'
+        : /^[0-9a-f]{7,40}$/.test(revision) ? 'git-sha' : revision ? 'other' : 'absent';
     const input = makeInput();
     const { html, samples } = measure(app.converter, lib.showdown, input, warmupCount, sampleCount, () => performance.now());
     const encoder = new TextEncoder();
     const inputBytes = encoder.encode(input);
     return {
-        nativeIos: true, nativeVariantMatches: true, warmups: warmupCount, samples,
+        nativeIos: true, nativeVersionReported: true, nativeRevisionKind,
+        nativeRevisionSha256: lib.sha256(encoder.encode(revision)), variantWitness, warmups: warmupCount, samples,
         inputUtf16: input.length, inputBytes: inputBytes.length, inputSha256: lib.sha256(inputBytes),
         outputSha256: lib.sha256(encoder.encode(html)),
         outputParagraphs: [...html.matchAll(/<p>/g)].length, outputQuotes: [...html.matchAll(/<q>/g)].length,
@@ -170,10 +195,11 @@ async function runBlock(variant, stateFile) {
     // Pilot eval has a short RPC deadline. Launch once and poll only its small report.
     const started = await evalMain(`(() => {
         const job = globalThis.__vtPublicMarkdown = {done:false};
-        Promise.resolve().then(() => (${pageBenchmark.toString()})(${JSON.stringify(variant)},
-            ${publicMarkdown.toString()}, ${measureConversions.toString()}, ${warmups}, ${conversions})).then(
+        Promise.resolve().then(() => (${pageBenchmark.toString()})(
+            ${publicMarkdown.toString()}, ${measureConversions.toString()}, ${observeBlockTagScans.toString()},
+            ${warmups}, ${conversions})).then(
             result => {job.result=result;job.done=true;}, error => {
-                const known = ['native-ios-webview-unavailable', 'unexpected-native-build', 'bundled-markdown-assets-unavailable',
+                const known = ['native-ios-webview-unavailable', 'native-version-unavailable', 'bundled-markdown-assets-unavailable',
                     'converter-not-ready', 'unexpected-markdown-output-or-events'];
                 job.failed = known.includes(error?.message) ? error.message : 'native-markdown-benchmark-failed';
                 job.done=true;
@@ -189,27 +215,37 @@ async function runBlock(variant, stateFile) {
             await evalMain('delete globalThis.__vtPublicMarkdown');
             if (job.failed) throw Error(job.failed);
             assert.ok(job.result, 'native-markdown-benchmark-failed');
-            return validateBlock({ ...job.result, onboardingAccepted });
+            return validateBlock({ ...job.result, onboardingAccepted }, variant);
         }
     }
     throw Error('native-markdown-benchmark-timeout');
 }
 
-function validateBlock(input) {
+function validateBlock(input, variant) {
     const text = publicMarkdown();
-    assert.ok(input?.nativeIos === true && input.nativeVariantMatches === true && typeof input.onboardingAccepted === 'boolean' &&
+    assert.ok(input?.nativeIos === true && input.nativeVersionReported === true && typeof input.onboardingAccepted === 'boolean' &&
+        ['variant-label', 'git-sha', 'other', 'absent'].includes(input.nativeRevisionKind) &&
+        /^[0-9a-f]{64}$/.test(input.nativeRevisionSha256) &&
         input.warmups === warmups &&
         input.inputUtf16 === text.length && input.inputBytes === Buffer.byteLength(text) &&
         input.inputSha256 === hash(text) && /^[0-9a-f]{64}$/.test(input.outputSha256) &&
         input.outputParagraphs === 358 && input.outputQuotes === 1 && input.samples.length === conversions, 'invalid-block');
+    const { inlineScans, blockControlScans } = input.variantWitness ?? {};
+    if (inlineScans !== (variant === 'M2' ? 68 : 0) || !Number.isSafeInteger(blockControlScans) || blockControlScans < 34) {
+        console.error('native-parser-witness', JSON.stringify({ variant, inlineScans, blockControlScans,
+            nativeRevisionKind: input.nativeRevisionKind, nativeRevisionSha256: input.nativeRevisionSha256 }));
+        throw Error('installed-parser-does-not-match-variant');
+    }
     const samples = input.samples.map(({ totalMs, blocksMs, blockCalls, beforeEvents, afterEvents }) => {
         assert.ok(Number.isFinite(totalMs) && totalMs >= 0 && Number.isFinite(blocksMs) && blocksMs >= 0 &&
             blocksMs <= totalMs + 1 && blockCalls === 2 && beforeEvents === blockCalls && afterEvents === blockCalls, 'sample-timing-or-events');
         return { totalMs, blocksMs, blockCalls, beforeEvents, afterEvents };
     });
-    const { nativeIos, nativeVariantMatches, inputUtf16, inputBytes, inputSha256, outputSha256, outputParagraphs, outputQuotes } = input;
-    return { nativeIos, nativeVariantMatches, inputUtf16, inputBytes, inputSha256, outputSha256,
-        outputParagraphs, outputQuotes, onboardingAccepted: input.onboardingAccepted, warmups, samples };
+    const { nativeIos, nativeVersionReported, nativeRevisionKind, nativeRevisionSha256, inputUtf16, inputBytes,
+        inputSha256, outputSha256, outputParagraphs, outputQuotes } = input;
+    return { nativeIos, nativeVersionReported, nativeRevisionKind, nativeRevisionSha256, inputUtf16, inputBytes,
+        inputSha256, outputSha256, outputParagraphs, outputQuotes, variantWitness: { inlineScans, blockControlScans },
+        onboardingAccepted: input.onboardingAccepted, warmups, samples };
 }
 
 function summarize(blocks) {
@@ -226,6 +262,8 @@ function summarize(blocks) {
         both[variant] = { conversions: samples.length, warmups: matching.length * warmups, totalMeanMs: mean('totalMs'),
             blocksMeanMs: mean('blocksMs'), blockCalls: count('blockCalls'), beforeEvents: count('beforeEvents'),
             afterEvents: count('afterEvents'), stockOnboardingAccepted: matching.filter(block => block.onboardingAccepted).length,
+            builds: matching.map(({ nativeRevisionKind, nativeRevisionSha256, variantWitness }) =>
+                ({ nativeRevisionKind, nativeRevisionSha256, ...variantWitness })),
             samples };
     }
     return { nativeIos: true, nativeVariantsVerified: true, sameOutput: true, order: variants,
@@ -237,7 +275,7 @@ async function main() {
     let report;
     if (command === 'block' && args.length === 2 && ['M2', 'After'].includes(args[0])) report = await runBlock(...args);
     else if (command === 'compare' && args.length === variants.length) {
-        report = summarize(args.map(file => validateBlock(JSON.parse(fs.readFileSync(file, 'utf8')))));
+        report = summarize(args.map((file, index) => validateBlock(JSON.parse(fs.readFileSync(file, 'utf8')), variants[index])));
     } else throw Error('usage: benchmark.mjs block <M2|After> <fresh-simulator.json> or compare <four block reports>');
     console.log(JSON.stringify(report, null, 2));
 }
