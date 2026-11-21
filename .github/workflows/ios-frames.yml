@@ -9,11 +9,11 @@ on:
       second:
         description: Paired product and same-repository build run, such as After@12346
         type: string
-        required: true
+        required: false
       mode:
-        description: One diagnostic pair, two screening pairs, or five timing pairs
+        description: One C-only diagnostic, one diagnostic pair, two screening pairs, or five timing pairs
         type: choice
-        options: [diagnostic, screen, timing]
+        options: [single-c, diagnostic, screen, timing]
         default: diagnostic
       fixture_sha:
         description: SHA-256 of the approved private fixture archive
@@ -46,7 +46,8 @@ jobs:
           FIRST: ${{ inputs.first }}
           SECOND: ${{ inputs.second }}
           PAIR: ${{ matrix.pair }}
-          VT_IOS_FRAME_MODE: ${{ inputs.mode }}
+          VT_IOS_FRAME_MODE: ${{ inputs.mode == 'single-c' && 'diagnostic' || inputs.mode }}
+          VT_IOS_C_ONLY: ${{ inputs.mode == 'single-c' && '1' || '0' }}
           FIXTURE_SHA256: ${{ inputs.fixture_sha }}
           VT_CONTROL_SHA256: ${{ vars.VT_CONTROL_SHA256 }}
           VT_CONTROL_URL: ${{ secrets.VT_CONTROL_URL }}

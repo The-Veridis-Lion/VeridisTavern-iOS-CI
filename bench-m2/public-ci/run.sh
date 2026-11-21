@@ -62,8 +62,12 @@ stage=inputs
 [[ -f "$control/bench-m2/ci-ios/report.py" && -f "$case_root/m2-private/ios/127.0.0.1/fixtures.json" ]]
 if [[ "$mode" == frames ]]; then
     [[ "${VT_IOS_FRAME_MODE-}" =~ ^(timing|screen|diagnostic)$ && "${PAIR-}" =~ ^[1-5]$ ]]
-    [[ "${FIRST-}" =~ ^(M2|After)@[0-9]+$ && "${SECOND-}" =~ ^(M2|After)@[0-9]+$ ]]
-    [[ "${FIRST%@*}" != "${SECOND%@*}" ]]
+    [[ "${FIRST-}" =~ ^(M2|After)@[0-9]+$ ]]
+    if [[ "${VT_IOS_C_ONLY-}" == 1 ]]; then
+        [[ "$VT_IOS_FRAME_MODE" == diagnostic && -z "${SECOND-}" ]]
+    else
+        [[ "${SECOND-}" =~ ^(M2|After)@[0-9]+$ && "${FIRST%@*}" != "${SECOND%@*}" ]]
+    fi
 else
     [[ "${VT_REPLAY_PHASE-}" =~ ^(fixed|ordinary|visible)$ && "${BUILD_VARIANT-}" =~ ^(M2|After)$ && "${BUILD_RUN-}" =~ ^[0-9]+$ ]]
 fi
