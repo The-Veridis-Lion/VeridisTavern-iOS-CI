@@ -1,0 +1,1275 @@
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index 067cc9418e38091f3b6472d7f9aa81312598a732..8e54f1ad828d318155cbac94f6e54ebcc68e4232 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -9380,6 +9380,7 @@ dependencies = [
+  "tt-domain",
+  "tt-ports",
+  "uuid",
++ "yaml_serde",
+  "zstd 0.13.4",
+ ]
+ 
+diff --git a/src-tauri/crates/tauritavern/src/app/composition/services/mod.rs b/src-tauri/crates/tauritavern/src/app/composition/services/mod.rs
+index 0b10b4d505aa57051dc02311ac7c6d0827256e96..1794abbde4ce3c5d881f69f61c4e6d95973bf94c 100644
+--- a/src-tauri/crates/tauritavern/src/app/composition/services/mod.rs
++++ b/src-tauri/crates/tauritavern/src/app/composition/services/mod.rs
+@@ -11,6 +11,7 @@ use crate::app::{AppServices, StartupProfile};
+ use tt_adapter_external_import::{HttpExternalImportDownloader, SiteImportContentResolver};
+ use tt_adapter_mcp::RmcpMcpGateway;
+ use tt_adapter_storage_core::file_system::DataDirectory;
++use tt_adapter_storage_core::load_st_prompt_placeholder;
+ use tt_adapter_storage_userdata::PngCharacterCardEmbedder;
+ use tt_adapter_triviumdb::TriviumDatabaseBackend;
+ use tt_adapter_workspace_shell::WorkspaceShellEngine;
+@@ -153,6 +154,7 @@ pub(super) async fn build(
+         repositories.prompt_cache_repository.clone(),
+         generation_runtime.clone(),
+         ios_policy.clone(),
++        load_st_prompt_placeholder(data_directory.root()).await,
+     ));
+     let text_completion_service = Arc::new(TextCompletionService::new(
+         repositories.text_completion_repository.clone(),
+diff --git a/src-tauri/crates/tt-adapter-storage-core/Cargo.toml b/src-tauri/crates/tt-adapter-storage-core/Cargo.toml
+index 24a056437b10e0de6e7ed87997ffe2733bfdc04d..75b8bf18c45dcb6a4aaa2412bd707d7aa07d5d49 100644
+--- a/src-tauri/crates/tt-adapter-storage-core/Cargo.toml
++++ b/src-tauri/crates/tt-adapter-storage-core/Cargo.toml
+@@ -25,6 +25,7 @@ tt-contracts = { path = "../tt-contracts" }
+ tt-domain = { path = "../tt-domain" }
+ tt-ports = { path = "../tt-ports" }
+ uuid = { workspace = true }
++yaml_serde = "0.10"
+ zstd = { workspace = true }
+ 
+ [dev-dependencies]
+diff --git a/src-tauri/crates/tt-adapter-storage-core/src/lib.rs b/src-tauri/crates/tt-adapter-storage-core/src/lib.rs
+index 625c0a5cbda827f932a4322709fe791f03c0339a..ce70cedd7c9b160b7f2cb1cd258f57bded9bd2b1 100644
+--- a/src-tauri/crates/tt-adapter-storage-core/src/lib.rs
++++ b/src-tauri/crates/tt-adapter-storage-core/src/lib.rs
+@@ -14,5 +14,5 @@ pub use repositories::{
+     FileGroupRepository, FileLaunchRecordRepository, FileLlmConnectionRepository,
+     FileMcpServerRepository, FilePromptCacheRepository, FileQuickReplyRepository,
+     FileSecretRepository, FileSettingsRepository, FileThemeRepository, FileUserDirectoryRepository,
+-    FileUserRepository, load_tauritavern_settings_blocking,
++    FileUserRepository, load_st_prompt_placeholder, load_tauritavern_settings_blocking,
+ };
+diff --git a/src-tauri/crates/tt-adapter-storage-core/src/repositories/file_settings_repository.rs b/src-tauri/crates/tt-adapter-storage-core/src/repositories/file_settings_repository.rs
+index e739582cb35456a136383e9408cf4c0596abf090..beb94a6a1106fa6863489727c80fdcbfe51e1bc1 100644
+--- a/src-tauri/crates/tt-adapter-storage-core/src/repositories/file_settings_repository.rs
++++ b/src-tauri/crates/tt-adapter-storage-core/src/repositories/file_settings_repository.rs
+@@ -65,6 +65,32 @@ pub fn load_tauritavern_settings_blocking(
+     sections::load_native(settings_dir, initial_settings)
+ }
+ 
++/// Read the SillyTavern server setting carried under the data root by an archive.
++pub async fn load_st_prompt_placeholder(data_root: &Path) -> Result<String, DomainError> {
++    let contents = match fs::read_to_string(data_root.join("config.yaml")).await {
++        Ok(contents) => contents,
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
++            // A new SillyTavern installation receives this value from default/config.yaml.
++            return Ok("[Start a new chat]".to_owned());
++        }
++        Err(error) => {
++            return Err(DomainError::InternalError(format!(
++                "Read config.yaml: {error}"
++            )));
++        }
++    };
++    let config: yaml_serde::Value = yaml_serde::from_str(&contents)
++        .map_err(|_| DomainError::InvalidData("Invalid SillyTavern config.yaml".to_owned()))?;
++    match config.get("promptPlaceholder") {
++        None => Ok("Let's get started.".to_owned()),
++        Some(yaml_serde::Value::Null) => Ok(String::new()),
++        Some(yaml_serde::Value::String(text)) => Ok(text.clone()),
++        Some(_) => Err(DomainError::InvalidData(
++            "SillyTavern config.yaml promptPlaceholder must be text or null".to_owned(),
++        )),
++    }
++}
++
+ impl FileSettingsRepository {
+     pub fn new(
+         settings_dir: PathBuf,
+@@ -467,7 +493,9 @@ impl SettingsRepository for FileSettingsRepository {
+ #[cfg(test)]
+ mod tests {
+     use super::fields::{APPEARANCE_FILE, DYNAMIC_THEME_FILE, LAYOUT_FILE, PRESETS_FILE};
+-    use super::{FileSettingsRepository, load_tauritavern_settings_blocking};
++    use super::{
++        FileSettingsRepository, load_st_prompt_placeholder, load_tauritavern_settings_blocking,
++    };
+     use serde_json::json;
+     use std::fs;
+     use std::path::Path;
+@@ -475,6 +503,31 @@ mod tests {
+     use tt_domain::models::settings::{TauriTavernSettings, UserSettings};
+     use tt_ports::repositories::settings_repository::SettingsRepository;
+ 
++    #[tokio::test]
++    async fn st_prompt_placeholder_distinguishes_new_install_and_existing_config() {
++        let temp = tempfile::tempdir().expect("create data root");
++        assert_eq!(
++            load_st_prompt_placeholder(temp.path()).await.unwrap(),
++            "[Start a new chat]"
++        );
++        let config = temp.path().join("config.yaml");
++        for (yaml, expected) in [
++            ("unrelatedSetting: true\n", "Let's get started."),
++            (
++                "promptPlaceholder: \"Synthetic migration text\"\n",
++                "Synthetic migration text",
++            ),
++            ("promptPlaceholder: \"\"\n", ""),
++            ("promptPlaceholder: null\n", ""),
++        ] {
++            fs::write(&config, yaml).unwrap();
++            assert_eq!(
++                load_st_prompt_placeholder(temp.path()).await.unwrap(),
++                expected
++            );
++        }
++    }
++
+     fn default_user_settings() -> UserSettings {
+         UserSettings {
+             data: json!({"firstRun": true}),
+diff --git a/src-tauri/crates/tt-adapter-storage-core/src/repositories/mod.rs b/src-tauri/crates/tt-adapter-storage-core/src/repositories/mod.rs
+index cc6d00399239704dad0425d19991df16428356f0..24ad1c1d9bb39a69678337be879aab29a28ef8ac 100644
+--- a/src-tauri/crates/tt-adapter-storage-core/src/repositories/mod.rs
++++ b/src-tauri/crates/tt-adapter-storage-core/src/repositories/mod.rs
+@@ -25,7 +25,9 @@ pub use file_mcp_server_repository::FileMcpServerRepository;
+ pub use file_prompt_cache_repository::FilePromptCacheRepository;
+ pub use file_quick_reply_repository::FileQuickReplyRepository;
+ pub use file_secret_repository::FileSecretRepository;
+-pub use file_settings_repository::{FileSettingsRepository, load_tauritavern_settings_blocking};
++pub use file_settings_repository::{
++    FileSettingsRepository, load_st_prompt_placeholder, load_tauritavern_settings_blocking,
++};
+ pub use file_theme_repository::FileThemeRepository;
+ pub use file_user_directory_repository::FileUserDirectoryRepository;
+ pub use file_user_repository::FileUserRepository;
+diff --git a/src-tauri/crates/tt-application/src/services/chat_completion_service/additional_parameters.rs b/src-tauri/crates/tt-application/src/services/chat_completion_service/additional_parameters.rs
+index 0fddf81414fb6c3fb8a73c008ba98a7c1728f16a..e9e1776e981c6c83c6d0e86e6a0f09f262aca7d8 100644
+--- a/src-tauri/crates/tt-application/src/services/chat_completion_service/additional_parameters.rs
++++ b/src-tauri/crates/tt-application/src/services/chat_completion_service/additional_parameters.rs
+@@ -63,11 +63,12 @@ impl AdditionalParameters {
+         Ok(())
+     }
+ 
+-    /// Applies user `custom_include_body` / `custom_exclude_body` after provider
+-    /// payload construction; these overrides are final upstream intent.
++    /// Applies included fields, then excludes keys from the final body. A provider
++    /// can retain fields it resolves after includes, including a deliberate omission.
+     pub(super) fn apply_body_overrides(
+         &self,
+         upstream_payload: &mut Value,
++        fields_resolved_after_include: &[&str],
+     ) -> Result<(), ApplicationError> {
+         let Some(body) = upstream_payload.as_object_mut() else {
+             return Err(ApplicationError::InternalError(
+@@ -78,7 +79,9 @@ impl AdditionalParameters {
+         if !self.include_body.trim().is_empty() {
+             let include_map = custom_parameters::parse_object(&self.include_body)?;
+             for (key, value) in include_map {
+-                body.insert(key, value);
++                if !fields_resolved_after_include.contains(&key.as_str()) {
++                    body.insert(key, value);
++                }
+             }
+         }
+ 
+@@ -166,7 +169,7 @@ mod tests {
+         });
+ 
+         parameters
+-            .apply_body_overrides(&mut upstream_payload)
++            .apply_body_overrides(&mut upstream_payload, &[])
+             .expect("overrides should apply");
+ 
+         assert_eq!(upstream_payload["temperature"], json!(0.7));
+@@ -216,7 +219,7 @@ mod tests {
+         let mut upstream_payload = json!({ "model": "gpt-4.1-mini", "temperature": 0.1 });
+ 
+         parameters
+-            .apply_body_overrides(&mut upstream_payload)
++            .apply_body_overrides(&mut upstream_payload, &[])
+             .expect("overrides should apply");
+ 
+         assert_eq!(upstream_payload["temperature"], json!(0.7));
+diff --git a/src-tauri/crates/tt-application/src/services/chat_completion_service/mod.rs b/src-tauri/crates/tt-application/src/services/chat_completion_service/mod.rs
+index bd446b3d27f1ea25ecfa8d3d2ee618bebacded72..6256177551cc924c11f0f1d59fafe2b55e879d42 100644
+--- a/src-tauri/crates/tt-application/src/services/chat_completion_service/mod.rs
++++ b/src-tauri/crates/tt-application/src/services/chat_completion_service/mod.rs
+@@ -13,6 +13,7 @@ use crate::services::generation_runtime::{
+     GenerationRuntime, RegisteredRequest, notifies_completion, until_cancelled,
+ };
+ use crate::services::hashing::hex_lower;
++use tt_domain::errors::DomainError;
+ use tt_domain::ios_policy::{IosPolicyActivationReport, IosPolicyScope};
+ use tt_domain::models::claude_model::supports_one_hour_prompt_cache;
+ use tt_domain::models::settings::{PromptCacheTtl, TauriTavernSettings};
+@@ -78,6 +79,7 @@ pub struct ChatCompletionService {
+     prompt_cache_repository: Arc<dyn PromptCacheRepository>,
+     generation_runtime: Arc<GenerationRuntime>,
+     ios_policy: IosPolicyActivationReport,
++    custom_prompt_placeholder: Result<String, DomainError>,
+ }
+ 
+ impl ChatCompletionService {
+@@ -88,6 +90,7 @@ impl ChatCompletionService {
+         prompt_cache_repository: Arc<dyn PromptCacheRepository>,
+         generation_runtime: Arc<GenerationRuntime>,
+         ios_policy: IosPolicyActivationReport,
++        custom_prompt_placeholder: Result<String, DomainError>,
+     ) -> Self {
+         Self {
+             chat_completion_repository,
+@@ -96,6 +99,7 @@ impl ChatCompletionService {
+             prompt_cache_repository,
+             generation_runtime,
+             ios_policy,
++            custom_prompt_placeholder,
+         }
+     }
+ 
+@@ -465,8 +469,12 @@ impl ChatCompletionService {
+         )
+         .await?;
+         apply_opencode_session_header(source, &dto.payload, &mut config)?;
+-        let (endpoint_path, mut upstream_payload) = payload::build_payload(source, dto.payload)?;
+-        additional_parameters.apply_body_overrides(&mut upstream_payload)?;
++        let (endpoint_path, mut upstream_payload) = payload::build_payload(
++            source,
++            dto.payload,
++            self.custom_prompt_placeholder.as_deref(),
++            &additional_parameters,
++        )?;
+         self.apply_tauritavern_prompt_caching(
+             source,
+             &endpoint_path,
+diff --git a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/deepseek.rs b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/deepseek.rs
+index 7e5a3e46755129ccb66570b0cea3d0c3209f5c05..ca324d9ee5184e1b683129db95b0f65b8091a934 100644
+--- a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/deepseek.rs
++++ b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/deepseek.rs
+@@ -293,7 +293,7 @@ mod tests {
+     use crate::errors::ApplicationError;
+ 
+     fn build(payload: Map<String, Value>) -> Result<(String, Value), ApplicationError> {
+-        super::super::build_payload(ChatCompletionSource::DeepSeek, payload)
++        super::super::build_test_payload(ChatCompletionSource::DeepSeek, payload)
+     }
+ 
+     #[test]
+@@ -478,7 +478,8 @@ mod tests {
+             });
+             let source = ChatCompletionSource::parse(source).unwrap();
+             let (_, request) =
+-                super::super::build_payload(source, payload.as_object().unwrap().clone()).unwrap();
++                super::super::build_test_payload(source, payload.as_object().unwrap().clone())
++                    .unwrap();
+             let messages = request["messages"].as_array().unwrap();
+             let user = messages
+                 .iter()
+diff --git a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/mod.rs b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/mod.rs
+index acef129794c7f231709335021f42be0f453f0558..315e5338539f7252eb4d4457acb204e7f506eec0 100644
+--- a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/mod.rs
++++ b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/mod.rs
+@@ -1,9 +1,11 @@
+ use serde_json::{Map, Value};
+ 
+ use crate::errors::ApplicationError;
++use tt_domain::errors::DomainError;
+ use tt_ports::repositories::chat_completion_repository::ChatCompletionSource;
+ 
+ use super::OPENCODE_STABLE_CHAT_ID_FIELD;
++use super::additional_parameters::AdditionalParameters;
+ use super::exchange::ChatCompletionProviderFormat;
+ use super::opencode::{self, OpenCodeApiFormat};
+ 
+@@ -36,10 +38,14 @@ mod zai;
+ pub(super) fn build_payload(
+     source: ChatCompletionSource,
+     payload: Map<String, Value>,
++    custom_prompt_placeholder: Result<&str, &DomainError>,
++    additional_parameters: &AdditionalParameters,
+ ) -> Result<(String, Value), ApplicationError> {
+     let mut payload = payload;
+     // Capture provider controls before wire builders discard internal fields.
+     let format = ChatCompletionProviderFormat::from_payload(source, &payload)?;
++    let custom_compat = source == ChatCompletionSource::Custom
++        && format == ChatCompletionProviderFormat::OpenAiCompatible;
+     let deepseek_options = deepseek::RequestOptions::from_payload(source, &payload)?;
+     let opencode_format = (source == ChatCompletionSource::OpenCode)
+         .then(|| opencode::format_from_payload(&payload))
+@@ -53,17 +59,29 @@ pub(super) fn build_payload(
+     extension_fields::project_extension_fields(&mut payload, source, format)?;
+ 
+     if !matches!(source, ChatCompletionSource::DeepSeek) {
+-        prompt_post_processing::apply_custom_prompt_post_processing(&mut payload);
++        let placeholder = if custom_compat {
++            custom_prompt_placeholder
++        } else {
++            Ok(prompt_post_processing::PROMPT_PLACEHOLDER)
++        };
++        prompt_post_processing::apply_custom_prompt_post_processing(&mut payload, placeholder)?;
+     }
+ 
+-    if source == ChatCompletionSource::OpenAi
+-        && format == ChatCompletionProviderFormat::OpenAiResponses
+-    {
+-        openai_reasoning::prepare_openai_reasoning_request(&mut payload);
+-        return openai_responses::build(payload);
+-    }
++    let nonempty_array = |key| {
++        payload
++            .get(key)
++            .and_then(Value::as_array)
++            .is_some_and(|entries| !entries.is_empty())
++    };
++    let has_stop = nonempty_array("stop");
++    let has_tools = nonempty_array("tools");
++    let has_schema = payload.get("json_schema").is_some_and(Value::is_object);
+ 
+     let (endpoint, mut body) = match source {
++        ChatCompletionSource::OpenAi if format == ChatCompletionProviderFormat::OpenAiResponses => {
++            openai_reasoning::prepare_openai_reasoning_request(&mut payload);
++            openai_responses::build(payload)
++        }
+         ChatCompletionSource::OpenAi
+         | ChatCompletionSource::Groq
+         | ChatCompletionSource::SiliconFlow
+@@ -98,16 +116,187 @@ pub(super) fn build_payload(
+     {
+         options.apply(body.as_object_mut().expect("wire builders return objects"));
+     }
++    let mut resolved_after_include = Vec::new();
++    if custom_compat && endpoint == "/chat/completions" {
++        // ST merges Custom includes before resolving these standard fields.
++        resolved_after_include.extend(
++            [
++                ("reasoning_effort", body.get("reasoning_effort").is_some()),
++                ("verbosity", body.get("verbosity").is_some()),
++                ("stop", has_stop),
++                ("tools", has_tools),
++                ("tool_choice", has_tools),
++                ("response_format", has_schema),
++            ]
++            .into_iter()
++            .filter_map(|(field, resolved)| resolved.then_some(field)),
++        );
++    } else if custom_compat && endpoint == "/completions" && has_stop {
++        resolved_after_include.push("stop");
++    }
++    additional_parameters.apply_body_overrides(&mut body, &resolved_after_include)?;
+     Ok((endpoint, body))
+ }
+ 
++#[cfg(test)]
++fn build_test_payload(
++    source: ChatCompletionSource,
++    payload: Map<String, Value>,
++) -> Result<(String, Value), ApplicationError> {
++    build_payload(
++        source,
++        payload,
++        Ok(prompt_post_processing::PROMPT_PLACEHOLDER),
++        &AdditionalParameters::default(),
++    )
++}
++
+ #[cfg(test)]
+ mod tests {
+     use serde_json::{Value, json};
+ 
+-    use super::build_payload;
++    use super::AdditionalParameters;
++    use super::build_test_payload as build_payload;
+     use tt_ports::repositories::chat_completion_repository::ChatCompletionSource;
+ 
++    #[test]
++    fn custom_chat_preserves_st_tool_history_placeholder_and_override_order() {
++        for (model, placeholder, excluded, expected_effort) in [
++            (
++                "gpt-5",
++                "A synthetic starting prompt",
++                "- top_p",
++                Some("minimal"),
++            ),
++            ("gateway/unknown", "", "- top_p", Some("manual")),
++            (
++                "gpt-5",
++                "A synthetic starting prompt",
++                "- reasoning_effort\n- stream_options",
++                None,
++            ),
++        ] {
++            let payload = json!({
++                "chat_completion_source": "custom",
++                "model": model,
++                "stream": true,
++                "max_tokens": 65000,
++                "top_p": 1,
++                "stop": ["structured"],
++                "reasoning_effort": "min",
++                "custom_prompt_post_processing": "strict_tools",
++                "custom_include_body": "reasoning_effort: manual\nstream_options: {include_usage: false}\nstop: [override]\ntools: []\ntool_choice: none",
++                "custom_exclude_body": excluded,
++                "messages": [
++                    {"role": "system", "content": "System"},
++                    {"role": "assistant", "content": "Call", "tool_calls": [
++                        {"id": "tool1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
++                    ]},
++                    {"role": "tool", "content": "Result", "tool_call_id": "tool1"},
++                    {"role": "user", "content": "Proceed"}
++                ],
++                "tools": [{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]
++            })
++            .as_object()
++            .unwrap()
++            .clone();
++            let additions = AdditionalParameters::from_payload(&payload).unwrap();
++            let (endpoint, body) = super::build_payload(
++                ChatCompletionSource::Custom,
++                payload,
++                Ok(placeholder),
++                &additions,
++            )
++            .unwrap();
++
++            assert_eq!(endpoint, "/chat/completions");
++            assert_eq!(body["max_tokens"], 65000);
++            assert_eq!(
++                body.get("reasoning_effort").and_then(Value::as_str),
++                expected_effort
++            );
++            assert_eq!(body["stop"], json!(["structured"]));
++            assert_eq!(body["tools"][0]["function"]["name"], "f");
++            assert!(body.get("tool_choice").is_none());
++            if expected_effort.is_some() {
++                assert_eq!(body["stream_options"], json!({"include_usage":false}));
++                assert!(body.get("top_p").is_none());
++            } else {
++                assert!(body.get("stream_options").is_none());
++            }
++            assert_eq!(
++                body["messages"][1],
++                json!({"role":"user", "content":placeholder})
++            );
++            assert_eq!(body["messages"][2]["tool_calls"][0]["id"], "tool1");
++            assert_eq!(
++                body["messages"][3],
++                json!({"role":"tool", "content":"Result", "tool_call_id":"tool1"})
++            );
++        }
++    }
++
++    #[test]
++    fn invalid_placeholder_configuration_only_rejects_requests_inserting_it() {
++        let error = super::DomainError::InvalidData("Invalid test config.yaml".into());
++        for (source, first_role, rejected) in [
++            (ChatCompletionSource::Custom, "user", false),
++            (ChatCompletionSource::Custom, "system", true),
++            (ChatCompletionSource::OpenAi, "system", false),
++        ] {
++            let payload = json!({
++                "chat_completion_source": source.key(),
++                "model": "synthetic",
++                "custom_prompt_post_processing": "strict_tools",
++                "messages": [{"role":first_role,"content":"Synthetic prompt"}],
++            });
++            let result = super::build_payload(
++                source,
++                payload.as_object().unwrap().clone(),
++                Err(&error),
++                &AdditionalParameters::default(),
++            );
++            assert_eq!(result.is_err(), rejected, "{source:?} / {first_role}");
++            if rejected {
++                assert!(matches!(
++                    result,
++                    Err(super::ApplicationError::ValidationError(_))
++                ));
++            }
++        }
++    }
++
++    #[test]
++    fn custom_legacy_completions_keeps_st_sampling_fields() {
++        let payload = json!({
++            "chat_completion_source": "custom",
++            "model": "gpt-3.5-turbo-instruct",
++            "messages": "Synthetic prompt",
++            "top_k": 12,
++            "max_completion_tokens": 50,
++            "stop": ["structured"],
++            "logprobs": 2,
++            "top_logprobs": 99,
++            "custom_include_body": "stop: [manual]"
++        });
++        let payload = payload.as_object().unwrap().clone();
++        let additions = AdditionalParameters::from_payload(&payload).unwrap();
++        let (endpoint, body) = super::build_payload(
++            ChatCompletionSource::Custom,
++            payload,
++            Ok(super::prompt_post_processing::PROMPT_PLACEHOLDER),
++            &additions,
++        )
++        .unwrap();
++        assert_eq!(endpoint, "/completions");
++        assert_eq!(body["prompt"], "Synthetic prompt");
++        assert_eq!(body["top_k"], 12);
++        assert_eq!(body["max_completion_tokens"], 50);
++        assert_eq!(body["stop"], json!(["structured"]));
++        assert_eq!(body["logprobs"], 2);
++        assert!(body.get("top_logprobs").is_none());
++    }
++
+     #[test]
+     fn converted_tool_call_history_replays_unusable_arguments_as_an_empty_object() {
+         let error = "## Tool error\n\nRequest rejected";
+diff --git a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/openai.rs b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/openai.rs
+index f697e9e6b1a0d796cd8184a11ff5b586d827fbbe..e1046a153e86c1d35e245b79bf6a21024126fcfe 100644
+--- a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/openai.rs
++++ b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/openai.rs
+@@ -7,9 +7,10 @@ use super::content_parts::{
+     rewrite_audio_url_parts_to_input_audio,
+ };
+ use super::openai_reasoning::{
+-    normalize_openai_reasoning_effort, should_forward_openai_reasoning_effort,
++    custom_compat_reasoning_effort, normalize_openai_reasoning_effort,
++    should_forward_openai_reasoning_effort,
+ };
+-use super::shared::{insert_if_present, json_schema_fields, message_content_to_text};
++use super::shared::{insert_if_present, is_js_truthy, json_schema_fields, message_content_to_text};
+ 
+ const TEXT_COMPLETION_MODELS: &[&str] = &[
+     "gpt-3.5-turbo-instruct",
+@@ -96,7 +97,7 @@ fn build_clean(
+     if allow_text_completions && is_text_completion(&payload) {
+         Ok((
+             "/completions".to_string(),
+-            Value::Object(build_text_completion_payload(&payload)?),
++            Value::Object(build_text_completion_payload(&payload, source)?),
+         ))
+     } else {
+         Ok((
+@@ -108,6 +109,7 @@ fn build_clean(
+ 
+ fn build_text_completion_payload(
+     payload: &Map<String, Value>,
++    source: &str,
+ ) -> Result<Map<String, Value>, ApplicationError> {
+     let mut request = Map::new();
+ 
+@@ -119,7 +121,6 @@ fn build_text_completion_payload(
+         "presence_penalty",
+         "frequency_penalty",
+         "top_p",
+-        "stop",
+         "logit_bias",
+         "seed",
+         "n",
+@@ -128,6 +129,24 @@ fn build_text_completion_payload(
+         insert_if_present(&mut request, payload, key);
+     }
+ 
++    if source == "custom" {
++        for key in ["top_k", "max_completion_tokens"] {
++            insert_if_present(&mut request, payload, key);
++        }
++        if let Some(logprobs) = payload.get("logprobs") {
++            request.insert("logprobs".to_string(), logprobs.clone());
++        }
++        if payload
++            .get("stop")
++            .and_then(Value::as_array)
++            .is_some_and(|stop| !stop.is_empty())
++        {
++            insert_if_present(&mut request, payload, "stop");
++        }
++    } else {
++        insert_if_present(&mut request, payload, "stop");
++    }
++
+     if let Some(prompt) = payload
+         .get("prompt")
+         .cloned()
+@@ -167,28 +186,35 @@ fn build_chat_completion_payload(
+         "logit_bias",
+         "seed",
+         "n",
+-        "user",
+     ] {
+         insert_if_present(&mut request, payload, key);
+     }
++    if source != "custom" {
++        insert_if_present(&mut request, payload, "user");
++    }
+ 
+-    if payload.get("stream").and_then(Value::as_bool) == Some(true) {
++    if source != "custom" && payload.get("stream").and_then(Value::as_bool) == Some(true) {
+         request.insert(
+             "stream_options".to_string(),
+             serde_json::json!({ "include_usage": true }),
+         );
+     }
+ 
+-    if (source == "custom"
+-        || (source == "pollinations"
+-            && payload.get("pollinations_endpoint").and_then(Value::as_str) != Some("anonymous")))
++    if source == "pollinations"
++        && payload.get("pollinations_endpoint").and_then(Value::as_str) != Some("anonymous")
+         && let Some(reasoning_effort) = payload.get("reasoning_effort")
+     {
+         request.insert("reasoning_effort".to_string(), reasoning_effort.clone());
+     }
+ 
+     if let Some(model) = payload.get("model").and_then(Value::as_str) {
+-        if should_forward_openai_reasoning_effort(source, model)
++        if source == "custom" {
++            if let Some(effort) =
++                custom_compat_reasoning_effort(model, payload.get("reasoning_effort"))
++            {
++                request.insert("reasoning_effort".to_string(), effort);
++            }
++        } else if should_forward_openai_reasoning_effort(source, model)
+             && let Some(reasoning_effort) = payload
+                 .get("reasoning_effort")
+                 .and_then(Value::as_str)
+@@ -200,28 +226,33 @@ fn build_chat_completion_payload(
+             );
+         }
+ 
+-        if should_forward_openai_verbosity(source, model)
+-            && let Some(verbosity) = payload
+-                .get("verbosity")
+-                .and_then(Value::as_str)
+-                .map(str::trim)
+-                .filter(|value| !value.is_empty())
+-        {
+-            request.insert(
+-                "verbosity".to_string(),
+-                Value::String(verbosity.to_string()),
+-            );
++        if should_forward_openai_verbosity(source, model) {
++            let verbosity = payload.get("verbosity").and_then(|value| {
++                if source == "custom" {
++                    return is_js_truthy(value).then(|| value.clone());
++                }
++                value
++                    .as_str()
++                    .map(str::trim)
++                    .filter(|text| !text.is_empty())
++                    .map(|text| Value::String(text.to_owned()))
++            });
++            if let Some(verbosity) = verbosity {
++                request.insert("verbosity".to_string(), verbosity);
++            }
+         }
+     }
+ 
+-    if let Some(tools) = payload.get("tools").filter(|value| value.is_array()) {
+-        request.insert("tools".to_string(), tools.clone());
++    if let Some(tools) = payload.get("tools").and_then(Value::as_array)
++        && (source != "custom" || !tools.is_empty())
++    {
++        request.insert("tools".to_string(), Value::Array(tools.clone()));
+         insert_if_present(&mut request, payload, "tool_choice");
+     }
+ 
+-    map_chat_logprobs(&mut request, payload);
++    map_chat_logprobs(&mut request, payload, source);
+ 
+-    if let Some(response_format) = resolve_response_format(payload) {
++    if let Some(response_format) = resolve_response_format(payload, source) {
+         request.insert("response_format".to_string(), response_format);
+     }
+ 
+@@ -238,16 +269,35 @@ fn build_chat_completion_payload(
+ }
+ 
+ fn should_forward_openai_verbosity(source: &str, model: &str) -> bool {
+-    source == "openrouter"
+-        || (matches!(source, "openai" | "custom")
+-            && model.trim().to_ascii_lowercase().starts_with("gpt-5"))
++    match source {
++        "openrouter" => true,
++        "custom" => model.starts_with("gpt-5") || model.starts_with("gpt-6-astra"),
++        "openai" => model.trim().to_ascii_lowercase().starts_with("gpt-5"),
++        _ => false,
++    }
+ }
+ 
+-fn map_chat_logprobs(request: &mut Map<String, Value>, payload: &Map<String, Value>) {
++fn map_chat_logprobs(request: &mut Map<String, Value>, payload: &Map<String, Value>, source: &str) {
+     let Some(logprobs) = payload.get("logprobs") else {
+         return;
+     };
+ 
++    if source == "custom" {
++        let positive = logprobs.as_f64().is_some_and(|number| number > 0.0)
++            || logprobs.as_bool() == Some(true)
++            || logprobs
++                .as_str()
++                .and_then(|value| value.trim().parse::<f64>().ok())
++                .is_some_and(|number| number > 0.0);
++        if positive {
++            request.insert("logprobs".to_string(), Value::Bool(true));
++            request.insert("top_logprobs".to_string(), logprobs.clone());
++        } else {
++            request.insert("logprobs".to_string(), logprobs.clone());
++        }
++        return;
++    }
++
+     if let Some(raw_number) = logprobs.as_i64() {
+         if raw_number > 0 {
+             request.insert("logprobs".to_string(), Value::Bool(true));
+@@ -288,7 +338,23 @@ fn map_chat_logprobs(request: &mut Map<String, Value>, payload: &Map<String, Val
+     }
+ }
+ 
+-fn resolve_response_format(payload: &Map<String, Value>) -> Option<Value> {
++fn resolve_response_format(payload: &Map<String, Value>, source: &str) -> Option<Value> {
++    if source == "custom" {
++        let schema = payload.get("json_schema")?.as_object()?;
++        let mut fields = Map::new();
++        for (key, wire_key) in [("name", "name"), ("value", "schema")] {
++            if let Some(value) = schema.get(key) {
++                fields.insert(wire_key.to_string(), value.clone());
++            }
++        }
++        let strict = schema
++            .get("strict")
++            .filter(|strict| !strict.is_null())
++            .cloned()
++            .unwrap_or(Value::Bool(true));
++        fields.insert("strict".to_string(), strict);
++        return Some(serde_json::json!({ "type": "json_schema", "json_schema": fields }));
++    }
+     payload
+         .get("response_format")
+         .cloned()
+@@ -391,11 +457,13 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn custom_payload_forwards_reasoning_effort_for_unknown_models() {
++    fn custom_payload_omits_default_effort_and_usage_for_unknown_models() {
+         let payload = json!({
+             "chat_completion_source": "custom",
+             "model": "custom-reasoning-model",
+             "messages": [{"role": "user", "content": "hello"}],
++            "stream": true,
++            "stream_options": {"include_usage": true},
+             "reasoning_effort": "high",
+             "verbosity": "high"
+         })
+@@ -408,29 +476,68 @@ mod tests {
+ 
+         let body = upstream.as_object().expect("payload must be object");
+ 
+-        assert_eq!(
+-            body.get("reasoning_effort").and_then(Value::as_str),
+-            Some("high")
+-        );
+-
++        assert_eq!(body["stream"], true);
++        assert!(body.get("reasoning_effort").is_none());
++        assert!(body.get("stream_options").is_none());
+         assert!(body.get("verbosity").is_none());
+     }
+ 
+     #[test]
+-    fn custom_payload_preserves_reasoning_effort_for_openai_model_names() {
+-        for reasoning_effort in ["min", "max", "xhigh", "auto"] {
++    fn custom_payload_matches_st_effort_model_rules() {
++        for (model, effort, expected) in [
++            ("gpt-5.1", "min", Some("minimal")),
++            ("gpt-5.1", "max", Some("max")),
++            ("gpt-5.1", "auto", Some("auto")),
++            ("gpt-5.3-chat-latest", "low", Some("medium")),
++            ("gpt-6-astra", "min", Some("minimal")),
++            ("gpt-6.2-sol", "high", None),
++            ("gpt-5", "", None),
++            ("koboldcpp/synthetic", "xhigh", Some("xhigh")),
++            ("koboldcpp/", "high", None),
++        ] {
+             let payload = json!({
+                 "chat_completion_source": "custom",
+-                "model": "gpt-5.1",
++                "model": model,
+                 "messages": [{"role": "user", "content": "hello"}],
+-                "reasoning_effort": reasoning_effort
++                "reasoning_effort": effort
+             })
+             .as_object()
+             .cloned()
+             .expect("payload must be object");
+ 
+             let (_endpoint, upstream) = build(payload).expect("build should succeed");
+-            assert_eq!(upstream["reasoning_effort"], reasoning_effort);
++            assert_eq!(
++                upstream.get("reasoning_effort").and_then(Value::as_str),
++                expected,
++                "{model}"
++            );
++        }
++    }
++
++    #[test]
++    fn custom_chat_forwards_st_logprobs_and_omits_unsupported_raw_fields() {
++        for (raw, logprobs, top_logprobs) in [
++            (json!(0), json!(0), None),
++            (json!(2), json!(true), Some(json!(2))),
++            (json!(true), json!(true), Some(json!(true))),
++            (json!(false), json!(false), None),
++        ] {
++            let payload = json!({
++                "chat_completion_source": "custom",
++                "model": "gpt-6-astra-variant",
++                "messages": [{"role": "user", "content": "hello"}],
++                "verbosity": "high",
++                "logprobs": raw,
++                "top_logprobs": 99,
++                "user": "raw",
++                "response_format": {"type": "json_object"}
++            });
++            let (_, body) = build(payload.as_object().unwrap().clone()).unwrap();
++            assert_eq!(body["verbosity"], "high");
++            assert_eq!(body["logprobs"], logprobs);
++            assert_eq!(body.get("top_logprobs"), top_logprobs.as_ref());
++            assert!(body.get("user").is_none());
++            assert!(body.get("response_format").is_none());
+         }
+     }
+ 
+diff --git a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/openai_reasoning.rs b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/openai_reasoning.rs
+index f34a0be704158026a18e7f7579e3d803ca777410..7c62e649c96eaf08fda6853e6782f9c23541a5f2 100644
+--- a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/openai_reasoning.rs
++++ b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/openai_reasoning.rs
+@@ -1,6 +1,7 @@
+ use serde_json::{Map, Value};
+ 
+ use super::super::model_capabilities::RequestedReasoningEffort;
++use super::shared::is_js_truthy;
+ 
+ const OPENAI_REASONING_EFFORT_MODELS: &[&str] = &[
+     "o1",
+@@ -34,6 +35,63 @@ const OPENAI_REASONING_EFFORT_MODELS: &[&str] = &[
+     "gpt-5.5-2026-04-23",
+ ];
+ 
++// The SillyTavern Custom Chat Completions route matches these names exactly.
++// Native OpenAI routes use their own capability checks above and below.
++const SILLYTAVERN_CUSTOM_REASONING_EFFORT_MODELS: &[&str] = &[
++    "o1",
++    "o3-mini",
++    "o3-mini-2025-01-31",
++    "o4-mini",
++    "o4-mini-2025-04-16",
++    "o3",
++    "o3-2025-04-16",
++    "gpt-5",
++    "gpt-5-2025-08-07",
++    "gpt-5-mini",
++    "gpt-5-mini-2025-08-07",
++    "gpt-5-nano",
++    "gpt-5-nano-2025-08-07",
++    "gpt-5.1",
++    "gpt-5.1-2025-11-13",
++    "gpt-5.1-chat-latest",
++    "gpt-5.2",
++    "gpt-5.2-2025-12-11",
++    "gpt-5.2-chat-latest",
++    "gpt-5.3-chat-latest",
++    "gpt-5.4",
++    "gpt-5.4-2026-03-05",
++    "gpt-5.4-mini",
++    "gpt-5.4-mini-2026-03-17",
++    "gpt-5.4-nano",
++    "gpt-5.4-nano-2026-03-17",
++    "gpt-5.5",
++    "gpt-5.5-2026-04-23",
++    "gpt-5.6",
++    "gpt-5.6-sol",
++    "gpt-5.6-terra",
++    "gpt-5.6-luna",
++    "gpt-6-astra",
++];
++
++pub(super) fn custom_compat_reasoning_effort(model: &str, value: Option<&Value>) -> Option<Value> {
++    let effort = value.filter(|effort| is_js_truthy(effort))?;
++
++    if SILLYTAVERN_CUSTOM_REASONING_EFFORT_MODELS.contains(&model) {
++        return Some(match (model, effort.as_str()) {
++            ("gpt-5.3-chat-latest", _) => Value::String("medium".to_owned()),
++            (_, Some("min")) => Value::String("minimal".to_owned()),
++            _ => effort.clone(),
++        });
++    }
++
++    model
++        .strip_prefix("koboldcpp/")
++        .filter(|suffix| {
++            !suffix.is_empty() && !suffix.contains(['\n', '\r', '\u{2028}', '\u{2029}'])
++        })
++        .map(|_| effort.clone())
++}
++
+ const OPENAI_MAX_REASONING_EFFORT_MODELS: &[&str] =
+     &["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+ 
+diff --git a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/prompt_post_processing.rs b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/prompt_post_processing.rs
+index afc0b2582d78c4b612b2812ade1026515f3792cf..5932ebb692be9dd6db6b61f3b2e8a670314d7444 100644
+--- a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/prompt_post_processing.rs
++++ b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/prompt_post_processing.rs
+@@ -1,11 +1,14 @@
+ use std::collections::HashMap;
+ 
+ use serde_json::{Map, Value, json};
++use tt_domain::errors::DomainError;
+ use uuid::Uuid;
+ 
++use crate::errors::ApplicationError;
++
+ use super::tool_calls::is_tool_role;
+ 
+-const PROMPT_PLACEHOLDER: &str = "Let's get started.";
++pub(super) const PROMPT_PLACEHOLDER: &str = "Let's get started.";
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(super) enum PromptProcessingType {
+@@ -97,25 +100,29 @@ struct MergeOptions {
+     tools: bool,
+ }
+ 
+-pub(super) fn apply_custom_prompt_post_processing(payload: &mut Map<String, Value>) {
++pub(super) fn apply_custom_prompt_post_processing(
++    payload: &mut Map<String, Value>,
++    placeholder: Result<&str, &DomainError>,
++) -> Result<(), ApplicationError> {
+     let post_processing = payload
+         .get("custom_prompt_post_processing")
+         .and_then(Value::as_str)
+         .unwrap_or_default();
+     let post_processing = PromptProcessingType::parse(post_processing);
+     if post_processing == PromptProcessingType::None {
+-        return;
++        return Ok(());
+     }
+ 
+     let names = PromptNames::from_payload(payload);
+ 
+     let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) else {
+-        return;
++        return Ok(());
+     };
+ 
+     let messages = std::mem::take(messages);
+-    let processed = post_process_prompt(messages, post_processing, &names);
++    let processed = process_prompt(messages, post_processing, &names, placeholder)?;
+     payload.insert("messages".to_string(), Value::Array(processed));
++    Ok(())
+ }
+ 
+ pub(super) fn post_process_prompt(
+@@ -123,82 +130,77 @@ pub(super) fn post_process_prompt(
+     processing: PromptProcessingType,
+     names: &PromptNames,
+ ) -> Vec<Value> {
+-    match processing {
+-        PromptProcessingType::None => messages,
+-        PromptProcessingType::Merge => merge_messages(
+-            messages,
+-            names,
+-            MergeOptions {
+-                strict: false,
+-                placeholders: false,
+-                single: false,
+-                tools: false,
+-            },
+-        ),
+-        PromptProcessingType::MergeTools => merge_messages(
+-            messages,
+-            names,
+-            MergeOptions {
+-                strict: false,
+-                placeholders: false,
+-                single: false,
+-                tools: true,
+-            },
+-        ),
+-        PromptProcessingType::Semi => merge_messages(
+-            messages,
+-            names,
+-            MergeOptions {
+-                strict: true,
+-                placeholders: false,
+-                single: false,
+-                tools: false,
+-            },
+-        ),
+-        PromptProcessingType::SemiTools => merge_messages(
+-            messages,
+-            names,
+-            MergeOptions {
+-                strict: true,
+-                placeholders: false,
+-                single: false,
+-                tools: true,
+-            },
+-        ),
+-        PromptProcessingType::Strict => merge_messages(
+-            messages,
+-            names,
+-            MergeOptions {
+-                strict: true,
+-                placeholders: true,
+-                single: false,
+-                tools: false,
+-            },
+-        ),
+-        PromptProcessingType::StrictTools => merge_messages(
+-            messages,
+-            names,
+-            MergeOptions {
+-                strict: true,
+-                placeholders: true,
+-                single: false,
+-                tools: true,
+-            },
+-        ),
+-        PromptProcessingType::Single => merge_messages(
+-            messages,
+-            names,
+-            MergeOptions {
+-                strict: true,
+-                placeholders: false,
+-                single: true,
+-                tools: false,
+-            },
+-        ),
+-    }
++    process_prompt(messages, processing, names, Ok(PROMPT_PLACEHOLDER))
++        .expect("a built-in prompt placeholder is always available")
++}
++
++fn process_prompt(
++    messages: Vec<Value>,
++    processing: PromptProcessingType,
++    names: &PromptNames,
++    placeholder: Result<&str, &DomainError>,
++) -> Result<Vec<Value>, ApplicationError> {
++    let options = match processing {
++        PromptProcessingType::None => return Ok(messages),
++        PromptProcessingType::Merge => MergeOptions {
++            strict: false,
++            placeholders: false,
++            single: false,
++            tools: false,
++        },
++        PromptProcessingType::MergeTools => MergeOptions {
++            strict: false,
++            placeholders: false,
++            single: false,
++            tools: true,
++        },
++        PromptProcessingType::Semi => MergeOptions {
++            strict: true,
++            placeholders: false,
++            single: false,
++            tools: false,
++        },
++        PromptProcessingType::SemiTools => MergeOptions {
++            strict: true,
++            placeholders: false,
++            single: false,
++            tools: true,
++        },
++        PromptProcessingType::Strict => MergeOptions {
++            strict: true,
++            placeholders: true,
++            single: false,
++            tools: false,
++        },
++        PromptProcessingType::StrictTools => MergeOptions {
++            strict: true,
++            placeholders: true,
++            single: false,
++            tools: true,
++        },
++        PromptProcessingType::Single => MergeOptions {
++            strict: true,
++            placeholders: false,
++            single: true,
++            tools: false,
++        },
++    };
++    merge_messages(messages, names, options, placeholder)
+ }
+ 
+-fn merge_messages(messages: Vec<Value>, names: &PromptNames, options: MergeOptions) -> Vec<Value> {
++fn merge_messages(
++    messages: Vec<Value>,
++    names: &PromptNames,
++    options: MergeOptions,
++    placeholder: Result<&str, &DomainError>,
++) -> Result<Vec<Value>, ApplicationError> {
++    let placeholder_message = || {
++        let content = placeholder.map_err(|error| match error {
++            DomainError::InvalidData(message) => ApplicationError::ValidationError(message.clone()),
++            _ => ApplicationError::InternalError(error.to_string()),
++        })?;
++        Ok::<_, ApplicationError>(json!({ "role": "user", "content": content }))
++    };
+     let mut content_tokens: HashMap<String, Value> = HashMap::new();
+ 
+     let mut normalized = Vec::with_capacity(messages.len());
+@@ -349,10 +351,7 @@ fn merge_messages(messages: Vec<Value>, names: &PromptNames, options: MergeOptio
+     }
+ 
+     if merged.is_empty() {
+-        merged.push(json!({
+-            "role": "user",
+-            "content": PROMPT_PLACEHOLDER,
+-        }));
++        merged.push(placeholder_message()?);
+     }
+ 
+     if !content_tokens.is_empty() {
+@@ -434,21 +433,9 @@ fn merge_messages(messages: Vec<Value>, names: &PromptNames, options: MergeOptio
+                 .and_then(Value::as_str);
+ 
+             if first_role == "system" && second_role != Some("user") {
+-                merged.insert(
+-                    1,
+-                    json!({
+-                        "role": "user",
+-                        "content": PROMPT_PLACEHOLDER,
+-                    }),
+-                );
++                merged.insert(1, placeholder_message()?);
+             } else if first_role != "system" && first_role != "user" {
+-                merged.insert(
+-                    0,
+-                    json!({
+-                        "role": "user",
+-                        "content": PROMPT_PLACEHOLDER,
+-                    }),
+-                );
++                merged.insert(0, placeholder_message()?);
+             }
+         }
+ 
+@@ -461,10 +448,11 @@ fn merge_messages(messages: Vec<Value>, names: &PromptNames, options: MergeOptio
+                 single: false,
+                 tools: options.tools,
+             },
++            placeholder,
+         );
+     }
+ 
+-    merged
++    Ok(merged)
+ }
+ 
+ fn is_plain_text_prompt_message(message: &Map<String, Value>) -> bool {
+diff --git a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/shared.rs b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/shared.rs
+index 283b2a2bd5242e7f76a32671e6ec7ae3b1dffa53..7c6ca24657b3dda64ec6cd660c809beb7ab964dc 100644
+--- a/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/shared.rs
++++ b/src-tauri/crates/tt-application/src/services/chat_completion_service/payload/shared.rs
+@@ -20,6 +20,16 @@ pub(super) fn insert_if_present(dst: &mut Map<String, Value>, src: &Map<String,
+     }
+ }
+ 
++pub(super) fn is_js_truthy(value: &Value) -> bool {
++    match value {
++        Value::Null => false,
++        Value::Bool(value) => *value,
++        Value::Number(value) => value.as_f64() != Some(0.0),
++        Value::String(value) => !value.is_empty(),
++        Value::Array(_) | Value::Object(_) => true,
++    }
++}
++
+ pub(super) fn json_schema_fields(payload: &Map<String, Value>) -> Option<Map<String, Value>> {
+     let json_schema = payload.get("json_schema")?.as_object()?;
+     let schema = json_schema.get("value").filter(|value| !value.is_null())?;
+diff --git a/src/script.js b/src/script.js
+index b57a9ee02407622a9c7179835b22e496dffa5ec7..8c33b65d175bc17ac73caad13cd871fd92b32b5e 100644
+--- a/src/script.js
++++ b/src/script.js
+@@ -1909,6 +1909,13 @@ export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
+     return entities;
+ }
+ 
++function keepOpenChatOnCardRefresh(card, activeCard) {
++    if (!selected_group && activeCard?.chat && activeCard.avatar === card.avatar) {
++        // The card's stored default can lag behind an explicit chat open.
++        card.chat = activeCard.chat;
++    }
++}
++
+ export async function getOneCharacter(avatarUrl) {
+     const response = await fetch('/api/characters/get', {
+         method: 'POST',
+@@ -1926,6 +1933,7 @@ export async function getOneCharacter(avatarUrl) {
+         const indexOf = characters.findIndex(x => x.avatar === avatarUrl);
+ 
+         if (indexOf !== -1) {
++            keepOpenChatOnCardRefresh(getData, characters[this_chid]);
+             characters[indexOf] = getData;
+         } else {
+             toastr.error(t`Character ${avatarUrl} not found in the list`, t`Error`, { timeOut: 5000, preventDuplicates: true });
+@@ -1981,12 +1989,14 @@ export function getCharacterSource(chId = this_chid) {
+ }
+ 
+ async function applyCharactersSnapshot(getData) {
+-    const previousAvatar = this_chid !== undefined ? characters[this_chid]?.avatar : null;
++    const previousCharacter = characters[this_chid];
++    const previousAvatar = previousCharacter?.avatar;
+     characters.splice(0, characters.length);
+ 
+     for (let i = 0; i < getData.length; i++) {
+         characters[i] = getData[i];
+         characters[i].name = DOMPurify.sanitize(characters[i].name);
++        keepOpenChatOnCardRefresh(characters[i], previousCharacter);
+     }
+ 
+     if (previousAvatar) {
+diff --git a/tests/webview/chat-navigation.test.mjs b/tests/webview/chat-navigation.test.mjs
+index ceab111aefd84be5f0ccd14f23ce67f42089576b..7d7893c75bef7bd9ccd08fbc1624fb6bfefafe5d 100644
+--- a/tests/webview/chat-navigation.test.mjs
++++ b/tests/webview/chat-navigation.test.mjs
+@@ -331,6 +331,30 @@ test('character branching preserves the source identity and assigns a new identi
+     expect(stateCopies[0].targetStableChatId).toBe(targetIntegrity);
+ });
+ 
++test('refreshing the selected card while opening a chat keeps writes on the requested file', async () => {
++    await reset('character');
++    const originalDefault = payloads.get('default-chat');
++    const fetch = window.fetch;
++    window.fetch = async (url, options) => url === '/api/characters/get'
++        ? window.Response.json({ ...main.characters[0], chat: storedChat, description: 'Updated description' })
++        : fetch(url, options);
++    const refresh = () => main.getOneCharacter('Review.png');
++    main.eventSource.on(main.event_types.CHAT_CHANGED, refresh);
++    try {
++        await openExplicit('target-chat');
++        expect(main.getCurrentChatId()).toBe('target-chat');
++        expect(main.characters[0].description).toBe('Updated description');
++        main.chat[0].mes = 'Saved into the selected file';
++        await main.saveChatConditional();
++        await main.openCharacterChat('target-chat', 'Review.png');
++        expect(main.chat[0].mes).toBe('Saved into the selected file');
++        expect(payloads.get('default-chat')).toBe(originalDefault);
++    } finally {
++        main.eventSource.removeListener(main.event_types.CHAT_CHANGED, refresh);
++        window.fetch = fetch;
++    }
++});
++
+ test('saving during current-chat deletion preserves the replacement and original character ownership', async () => {
+     await reset('character');
+     await openExplicit('target-chat');

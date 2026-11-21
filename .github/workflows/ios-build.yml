@@ -1,0 +1,76 @@
+name: iOS Simulator build
+run-name: ${{ inputs.variant || 'After' }} iOS Simulator build
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Product patch to build on the pinned upstream checkout
+        type: choice
+        options: [After, M2, M1]
+        default: After
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 85
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+      CARGO_INCREMENTAL: 0
+      VT_IOS_BUILD_VARIANT: ${{ inputs.variant || 'After' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check out the pinned TauriTavern source
+        uses: actions/checkout@v7
+        with:
+          repository: Darkatse/TauriTavern
+          ref: 039a278448df37ac18f23d7015c06213bc6fcb36
+          path: tt
+          persist-credentials: false
+      - name: Verify and apply the selected product patch
+        run: |
+          test "$(git -C tt rev-parse HEAD)" = 039a278448df37ac18f23d7015c06213bc6fcb36
+          case "$VT_IOS_BUILD_VARIANT" in
+            M1) branch=m1-local; revision=m1-7e7082e01 ;;
+            M2) branch=veridis/m2; revision=m2-b86beb084 ;;
+            After) branch=veridis/after; revision='' ;;
+            *) echo 'Unexpected iOS build variant' >&2; exit 2 ;;
+          esac
+          patch="patches/$VT_IOS_BUILD_VARIANT.patch"
+          manifest="patches/$VT_IOS_BUILD_VARIANT.sha256"
+          if [[ ! -s "$patch" || ! -s "$manifest" ]]; then
+            echo "The $VT_IOS_BUILD_VARIANT patch and checksum must be pinned before building." >&2
+            exit 2
+          fi
+          read -r sha manifest_path < "$manifest"
+          [[ "$sha" =~ ^[a-f0-9]{64}$ && "$manifest_path" == "$patch" ]]
+          printf '%s  %s\n' "$sha" "$patch" | shasum -a 256 -c -
+          git -C tt apply "$GITHUB_WORKSPACE/$patch"
+          printf 'TAURITAVERN_BUILD_BRANCH=%s\nTAURITAVERN_BUILD_REVISION=%s\n' \
+            "$branch" "${revision:-after-${sha:0:9}}" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm install --global pnpm@11.22.0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build arm64 with the bundled frontend and Pilot
+        id: app
+        run: bash bench-m2/ci-ios/build.sh "$GITHUB_WORKSPACE/tt" "$RUNNER_TEMP/m2-build"
+      - name: Name the archive for the selected product
+        id: archive
+        env:
+          BUILT_ZIP: ${{ steps.app.outputs.zip }}
+        run: |
+          archive="$(dirname "$BUILT_ZIP")/$VT_IOS_BUILD_VARIANT-iOS-Simulator.zip"
+          if [[ "$BUILT_ZIP" != "$archive" ]]; then mv -- "$BUILT_ZIP" "$archive"; fi
+          printf 'zip=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.VT_IOS_BUILD_VARIANT }}-iOS-Simulator
+          path: ${{ steps.archive.outputs.zip }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
