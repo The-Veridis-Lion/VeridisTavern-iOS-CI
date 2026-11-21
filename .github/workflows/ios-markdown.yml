@@ -1,0 +1,58 @@
+name: iOS public Markdown benchmark
+on:
+  workflow_dispatch:
+    inputs:
+      m2_build:
+        description: Run ID of the M2 iOS Simulator build in this repository
+        type: string
+        required: true
+      after_build:
+        description: Run ID of the After iOS Simulator build in this repository
+        type: string
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  markdown:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Validate build run IDs
+        env:
+          M2_BUILD: ${{ inputs.m2_build }}
+          AFTER_BUILD: ${{ inputs.after_build }}
+        run: '[[ "$M2_BUILD" =~ ^[0-9]+$ && "$AFTER_BUILD" =~ ^[0-9]+$ && "$M2_BUILD" != "$AFTER_BUILD" ]]'
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.m2_build }}
+          name: M2-iOS-Simulator
+          path: ${{ runner.temp }}/markdown-m2
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.after_build }}
+          name: After-iOS-Simulator
+          path: ${{ runner.temp }}/markdown-after
+      - name: Run the public benchmark in native WKWebView
+        run: |
+          ditto -x -k "$RUNNER_TEMP/markdown-m2/M2-iOS-Simulator.zip" "$RUNNER_TEMP/markdown-m2"
+          ditto -x -k "$RUNNER_TEMP/markdown-after/After-iOS-Simulator.zip" "$RUNNER_TEMP/markdown-after"
+          bash bench-m2/public-markdown/run.sh "$RUNNER_TEMP/markdown-m2/TauriTavern.app" \
+            "$RUNNER_TEMP/markdown-after/TauriTavern.app" "$RUNNER_TEMP/public-markdown.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: public-markdown
+          path: ${{ runner.temp }}/public-markdown.json
+          if-no-files-found: error
