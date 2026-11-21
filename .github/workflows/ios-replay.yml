@@ -1,0 +1,62 @@
+name: iOS Simulator replay
+on:
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: Run ID of the same repository's Simulator build
+        type: string
+        required: true
+      variant:
+        type: choice
+        options: [M2, After]
+        default: M2
+      phase:
+        type: choice
+        options: [all, fixed, ordinary, visible]
+        default: all
+      fixture_sha:
+        description: SHA-256 of the approved private fixture archive
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  replay:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: xcode-27
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: ${{ fromJSON(inputs.phase == 'all' && '["fixed","ordinary","visible"]' || format('["{0}"]', inputs.phase)) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Replay in simulator
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+          BUILD_RUN: ${{ inputs.build_run }}
+          BUILD_VARIANT: ${{ inputs.variant }}
+          VT_REPLAY_PHASE: ${{ matrix.phase }}
+          FIXTURE_SHA256: ${{ inputs.fixture_sha }}
+          VT_CONTROL_SHA256: ${{ vars.VT_CONTROL_SHA256 }}
+          VT_CONTROL_URL: ${{ secrets.VT_CONTROL_URL }}
+          VT_FIXTURE_URL: ${{ secrets.VT_FIXTURE_URL }}
+          VT_REPORT_KEY: ${{ secrets.VT_REPORT_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash bench-m2/public-ci/run.sh replay
+      - name: Upload encrypted verdict
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: iOS-replay-${{ matrix.phase }}
+          path: ${{ runner.temp }}/vt-public-report.enc
+          if-no-files-found: ignore
+          retention-days: 14

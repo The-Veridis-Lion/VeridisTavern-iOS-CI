@@ -1,0 +1,64 @@
+name: iOS C stream comparison
+on:
+  workflow_dispatch:
+    inputs:
+      first:
+        description: First product and same-repository build run, such as M2@12345
+        type: string
+        required: true
+      second:
+        description: Paired product and same-repository build run, such as After@12346
+        type: string
+        required: true
+      mode:
+        description: One diagnostic pair, two screening pairs, or five timing pairs
+        type: choice
+        options: [diagnostic, screen, timing]
+        default: diagnostic
+      fixture_sha:
+        description: SHA-256 of the approved private fixture archive
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  compare:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: xcode-27
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: ${{ fromJSON(inputs.mode == 'timing' && '[1,2,3,4,5]' || inputs.mode == 'screen' && '[1,2]' || '[1]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Compare paired simulations
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+          FIRST: ${{ inputs.first }}
+          SECOND: ${{ inputs.second }}
+          PAIR: ${{ matrix.pair }}
+          VT_IOS_FRAME_MODE: ${{ inputs.mode }}
+          FIXTURE_SHA256: ${{ inputs.fixture_sha }}
+          VT_CONTROL_SHA256: ${{ vars.VT_CONTROL_SHA256 }}
+          VT_CONTROL_URL: ${{ secrets.VT_CONTROL_URL }}
+          VT_FIXTURE_URL: ${{ secrets.VT_FIXTURE_URL }}
+          VT_REPORT_KEY: ${{ secrets.VT_REPORT_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash bench-m2/public-ci/run.sh frames
+      - name: Upload encrypted comparison
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: iOS-frames-${{ matrix.pair }}
+          path: ${{ runner.temp }}/vt-public-report.enc
+          if-no-files-found: ignore
+          retention-days: 14
