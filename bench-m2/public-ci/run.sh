@@ -56,6 +56,7 @@ unset VT_CONTROL_URL
 stage=fixture-download
 quiet python3 "$here/archive.py" fetch VT_FIXTURE_URL "${FIXTURE_SHA256-}" "$case_root" "$private_root/trusted/fixtures.zip"
 unset VT_FIXTURE_URL
+export FIXTURE_SHA="$FIXTURE_SHA256"
 
 stage=inputs
 [[ -f "$control/bench-m2/ci-ios/report.py" && -f "$case_root/m2-private/ios/127.0.0.1/fixtures.json" ]]
