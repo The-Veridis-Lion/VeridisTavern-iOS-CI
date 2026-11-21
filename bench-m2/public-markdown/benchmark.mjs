@@ -60,6 +60,33 @@ export function measureConversions(converter, showdown, input, warmupCount, samp
     }
 }
 
+// Fresh upstream settings pause in the built-in persona dialog. Use its actual
+// Save action and keep the stock input, without seeding or rewriting settings.
+export function pageReadiness(acceptOnboarding) {
+    const stage = globalThis.__TAURITAVERN_STARTUP_STAGE__;
+    const documentReady = ['loading', 'interactive', 'complete'].includes(document.readyState) ? document.readyState : 'other';
+    const visible = document.visibilityState === 'visible';
+    const nativeIos = globalThis.__TAURITAVERN_HOST__?.platform === 'ios';
+    const invokeReady = typeof (globalThis.__TAURI__?.core ?? globalThis.__TAURI_INTERNALS__)?.invoke === 'function';
+    const assetsReady = globalThis.__TAURI_RUNNING__ === true && typeof globalThis.SillyTavern?.getContext === 'function';
+    const appFull = stage === 'full' && !document.querySelector('#tt-startup-status-overlay');
+    const startupFailed = Boolean(document.querySelector('#tt-startup-failure'));
+    const dialog = document.querySelector('dialog.popup[open]');
+    const onboarding = Boolean(dialog?.querySelector('.popup-content .onboarding #onboarding_ui_language_select') &&
+        dialog.querySelector('textarea.popup-input'));
+    let acceptedOnboarding = false;
+    if (acceptOnboarding && onboarding && stage === 'full' && !appFull && !startupFailed &&
+        documentReady === 'complete' && visible && nativeIos && invokeReady && assetsReady) {
+        const button = dialog.querySelector('button.popup-button-ok[data-result="1"]:not(:disabled)');
+        if (button?.getClientRects().length) {
+            button.click();
+            acceptedOnboarding = true;
+        }
+    }
+    return { documentReady, visible, nativeIos, invokeReady, assetsReady, appFull, startupFailed,
+        stage: ['shell', 'core', 'full'].includes(stage) ? stage : 'unknown', onboarding, acceptedOnboarding };
+}
+
 // Runs inside the existing main WKWebView on the booted Simulator.
 async function pageBenchmark(variant, makeInput, measure, warmupCount, sampleCount) {
     const core = globalThis.__TAURI__?.core ?? globalThis.__TAURI_INTERNALS__;
@@ -69,7 +96,8 @@ async function pageBenchmark(variant, makeInput, measure, warmupCount, sampleCou
     const expected = variant === 'M2' ? /^m2-[0-9a-f]{9}$/ : /^after-[0-9a-f]{9}$/;
     if (!expected.test(native?.gitRevision)) throw Error('unexpected-native-build');
     const asset = path => new URL(path, location.href).href;
-    const [app, lib] = await Promise.all([import(asset('/script.js')), import(asset('/lib.js'))]);
+    const [app, lib] = await Promise.all([import(asset('/script.js')), import(asset('/lib.js'))])
+        .catch(() => { throw Error('bundled-markdown-assets-unavailable'); });
     if (typeof app.converter?.makeHtml !== 'function') throw Error('converter-not-ready');
     const input = makeInput();
     const { html, samples } = measure(app.converter, lib.showdown, input, warmupCount, sampleCount, () => performance.now());
@@ -124,26 +152,28 @@ async function runBlock(variant, stateFile) {
     const pong = await rpc('ping');
     assert.ok(pong?.status === 'ok' && pong.plugin_version === '0.8.1', 'pilot-version');
     const resolveBy = Date.now() + 90_000;
-    let ready = false;
-    while (!ready && Date.now() < resolveBy) {
-        const status = await evalMain(`document.querySelector('#tt-startup-failure') ? -1 : (
-            document.readyState === 'complete' && document.visibilityState === 'visible' &&
-            globalThis.__TAURITAVERN_HOST__?.platform === 'ios' &&
-            globalThis.__TAURITAVERN_STARTUP_STAGE__ === 'full' &&
-            !document.querySelector('#tt-startup-status-overlay') &&
-            typeof globalThis.SillyTavern?.getContext === 'function')`).catch(() => false);
-        if (status === -1) throw Error('native-ios-startup-failed');
-        ready = status === true;
-        if (!ready) await delay(750);
+    let readiness;
+    let onboardingAccepted = false;
+    while (Date.now() < resolveBy) {
+        const status = await evalMain(`(${pageReadiness.toString()})(${!onboardingAccepted})`).catch(() => null);
+        if (status) readiness = status;
+        if (status?.acceptedOnboarding === true) onboardingAccepted = true;
+        if (status?.startupFailed || (status?.documentReady === 'complete' && status.visible &&
+            status.nativeIos && status.invokeReady && status.assetsReady && status.appFull)) break;
+        await delay(750);
     }
-    assert.ok(ready === true, 'native-ios-app-not-ready');
+    if (!readiness?.appFull || readiness.startupFailed || readiness.documentReady !== 'complete' ||
+        !readiness.visible || !readiness.nativeIos || !readiness.invokeReady || !readiness.assetsReady) {
+        console.error('native-startup-phase', JSON.stringify({ ...readiness, onboardingAccepted }));
+        throw Error(readiness?.startupFailed ? 'native-ios-startup-failed' : 'native-ios-app-not-ready');
+    }
     // Pilot eval has a short RPC deadline. Launch once and poll only its small report.
     const started = await evalMain(`(() => {
         const job = globalThis.__vtPublicMarkdown = {done:false};
         Promise.resolve().then(() => (${pageBenchmark.toString()})(${JSON.stringify(variant)},
             ${publicMarkdown.toString()}, ${measureConversions.toString()}, ${warmups}, ${conversions})).then(
             result => {job.result=result;job.done=true;}, error => {
-                const known = ['native-ios-webview-unavailable', 'unexpected-native-build',
+                const known = ['native-ios-webview-unavailable', 'unexpected-native-build', 'bundled-markdown-assets-unavailable',
                     'converter-not-ready', 'unexpected-markdown-output-or-events'];
                 job.failed = known.includes(error?.message) ? error.message : 'native-markdown-benchmark-failed';
                 job.done=true;
@@ -159,7 +189,7 @@ async function runBlock(variant, stateFile) {
             await evalMain('delete globalThis.__vtPublicMarkdown');
             if (job.failed) throw Error(job.failed);
             assert.ok(job.result, 'native-markdown-benchmark-failed');
-            return validateBlock(job.result);
+            return validateBlock({ ...job.result, onboardingAccepted });
         }
     }
     throw Error('native-markdown-benchmark-timeout');
@@ -167,7 +197,8 @@ async function runBlock(variant, stateFile) {
 
 function validateBlock(input) {
     const text = publicMarkdown();
-    assert.ok(input?.nativeIos === true && input.nativeVariantMatches === true && input.warmups === warmups &&
+    assert.ok(input?.nativeIos === true && input.nativeVariantMatches === true && typeof input.onboardingAccepted === 'boolean' &&
+        input.warmups === warmups &&
         input.inputUtf16 === text.length && input.inputBytes === Buffer.byteLength(text) &&
         input.inputSha256 === hash(text) && /^[0-9a-f]{64}$/.test(input.outputSha256) &&
         input.outputParagraphs === 358 && input.outputQuotes === 1 && input.samples.length === conversions, 'invalid-block');
@@ -178,7 +209,7 @@ function validateBlock(input) {
     });
     const { nativeIos, nativeVariantMatches, inputUtf16, inputBytes, inputSha256, outputSha256, outputParagraphs, outputQuotes } = input;
     return { nativeIos, nativeVariantMatches, inputUtf16, inputBytes, inputSha256, outputSha256,
-        outputParagraphs, outputQuotes, warmups, samples };
+        outputParagraphs, outputQuotes, onboardingAccepted: input.onboardingAccepted, warmups, samples };
 }
 
 function summarize(blocks) {
@@ -194,7 +225,8 @@ function summarize(blocks) {
         const count = key => samples.reduce((sum, sample) => sum + sample[key], 0);
         both[variant] = { conversions: samples.length, warmups: matching.length * warmups, totalMeanMs: mean('totalMs'),
             blocksMeanMs: mean('blocksMs'), blockCalls: count('blockCalls'), beforeEvents: count('beforeEvents'),
-            afterEvents: count('afterEvents'), samples };
+            afterEvents: count('afterEvents'), stockOnboardingAccepted: matching.filter(block => block.onboardingAccepted).length,
+            samples };
     }
     return { nativeIos: true, nativeVariantsVerified: true, sameOutput: true, order: variants,
         inputUtf16, inputBytes, inputSha256, outputSha256, outputParagraphs, outputQuotes, variants: both };

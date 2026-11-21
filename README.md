@@ -9,3 +9,5 @@ This fork packages iOS Simulator builds of [TauriTavern at commit `039a2784`](ht
 | [After](patches/After.patch) | M2 plus a Showdown block-scan optimization | `2fba8d0548715ee1c6522515294fcd8bd784b0125824393f8256f9cff727020e` |
 
 In GitHub Actions, run **iOS Simulator build** and choose a variant. **After** is the default. The workflow uses GitHub's standard `xcode-27` arm64 runner with Xcode 27.2. The artifact `<variant>-iOS-Simulator` contains an unsigned arm64 Simulator application with the frontend bundled. It can be installed on an iOS Simulator on Apple silicon.
+
+**iOS public Markdown benchmark** compares two builds using generated text. The separate replay workflows load private regression inputs into a temporary simulator and return encrypted measurement reports.
