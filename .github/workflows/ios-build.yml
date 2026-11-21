@@ -1,13 +1,13 @@
 name: iOS Simulator build
-run-name: ${{ inputs.variant || 'After' }} iOS Simulator build
+run-name: ${{ inputs.variant || 'M2' }} iOS Simulator build
 on:
   workflow_dispatch:
     inputs:
       variant:
         description: Product patch to build on the pinned upstream checkout
         type: choice
-        options: [After, M2, M1]
-        default: After
+        options: [M2, After, M1]
+        default: M2
 permissions:
   contents: read
 
@@ -18,7 +18,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       CARGO_INCREMENTAL: 0
-      VT_IOS_BUILD_VARIANT: ${{ inputs.variant || 'After' }}
+      VT_IOS_BUILD_VARIANT: ${{ inputs.variant || 'M2' }}
     steps:
       - uses: actions/checkout@v7
         with:
