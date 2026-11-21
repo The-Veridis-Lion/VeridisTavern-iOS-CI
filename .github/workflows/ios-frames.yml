@@ -7,13 +7,13 @@ on:
         type: string
         required: true
       second:
-        description: Paired product and same-repository build run, such as After@12346
+        description: Paired build, or ListenerFix@<same M2 run ID> for listener regression
         type: string
         required: false
       mode:
-        description: One C-only diagnostic, one diagnostic pair, two screening pairs, or five timing pairs
+        description: One C-only diagnostic, one diagnostic or listener-regression pair, two screening pairs, or five timing pairs
         type: choice
-        options: [single-c, diagnostic, screen, timing]
+        options: [single-c, diagnostic, listener-regression, screen, timing]
         default: diagnostic
       fixture_sha:
         description: SHA-256 of the approved private fixture archive
