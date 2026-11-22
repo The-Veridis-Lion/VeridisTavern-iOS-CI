@@ -61,14 +61,16 @@ export FIXTURE_SHA="$FIXTURE_SHA256"
 stage=inputs
 [[ -f "$control/bench-m2/ci-ios/report.py" && -f "$case_root/m2-private/ios/127.0.0.1/fixtures.json" ]]
 if [[ "$mode" == frames ]]; then
-    [[ "${VT_IOS_FRAME_MODE-}" =~ ^(timing|screen|diagnostic|listener-regression|listener-acceptance|tail-c|tail-native-c|tail-product-abc)$ && "${PAIR-}" =~ ^[1-5]$ ]]
+    [[ "${VT_IOS_FRAME_MODE-}" =~ ^(timing|screen|diagnostic|listener-regression|listener-acceptance|tail-c|tail-native-c|tail-product-c|tail-product-abc)$ && "${PAIR-}" =~ ^[1-5]$ ]]
     if [[ "$VT_IOS_FRAME_MODE" == listener-regression || "$VT_IOS_FRAME_MODE" == listener-acceptance || "$VT_IOS_FRAME_MODE" == tail-c ]]; then
         [[ "${FIRST-}" =~ ^(M2|ListenerFix)@[0-9]+$ && "${SECOND-}" =~ ^(M2|ListenerFix)@[0-9]+$ ]]
         if [[ "$VT_IOS_FRAME_MODE" == tail-c ]]; then [[ "${VT_IOS_C_ONLY-}" == 1 ]]; else [[ "${VT_IOS_C_ONLY-}" != 1 ]]; fi
         [[ "${FIRST%@*}" != "${SECOND%@*}" && "${FIRST#*@}" == "${SECOND#*@}" ]]
     else
         [[ "${FIRST-}" =~ ^(M2|After)@[0-9]+$ ]]
-        if [[ "${VT_IOS_C_ONLY-}" == 1 ]]; then
+        if [[ "$VT_IOS_FRAME_MODE" == tail-product-c ]]; then
+            [[ "${VT_IOS_C_ONLY-}" == 1 && "${FIRST-}" =~ ^M2@[0-9]+$ && "${SECOND-}" =~ ^After@[0-9]+$ && "${FIRST#*@}" != "${SECOND#*@}" ]]
+        elif [[ "${VT_IOS_C_ONLY-}" == 1 ]]; then
             [[ ( "$VT_IOS_FRAME_MODE" == diagnostic || "$VT_IOS_FRAME_MODE" == tail-native-c ) && -z "${SECOND-}" ]]
         else
             [[ "${SECOND-}" =~ ^(M2|After)@[0-9]+$ && "${FIRST%@*}" != "${SECOND%@*}" ]]

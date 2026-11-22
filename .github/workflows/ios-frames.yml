@@ -13,7 +13,7 @@ on:
       mode:
         description: One C-only diagnostic, one diagnostic or listener-regression pair, two screening pairs, or five timing pairs
         type: choice
-        options: [single-c, diagnostic, listener-regression, listener-acceptance, tail-c, tail-native-c, tail-product-abc, screen, timing]
+        options: [single-c, diagnostic, listener-regression, listener-acceptance, tail-c, tail-native-c, tail-product-c, tail-product-abc, screen, timing]
         default: diagnostic
       fixture_sha:
         description: SHA-256 of the approved private fixture archive
@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pair: ${{ fromJSON(inputs.mode == 'timing' && '[1,2,3,4,5]' || (inputs.mode == 'screen' || inputs.mode == 'tail-c' || inputs.mode == 'tail-product-abc') && '[1,2]' || '[1]') }}
+        pair: ${{ fromJSON(inputs.mode == 'timing' && '[1,2,3,4,5]' || (inputs.mode == 'screen' || inputs.mode == 'tail-c' || inputs.mode == 'tail-product-c' || inputs.mode == 'tail-product-abc') && '[1,2]' || '[1]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -47,7 +47,7 @@ jobs:
           SECOND: ${{ inputs.second }}
           PAIR: ${{ matrix.pair }}
           VT_IOS_FRAME_MODE: ${{ inputs.mode == 'single-c' && 'diagnostic' || inputs.mode }}
-          VT_IOS_C_ONLY: ${{ (inputs.mode == 'single-c' || inputs.mode == 'tail-c' || inputs.mode == 'tail-native-c') && '1' || '0' }}
+          VT_IOS_C_ONLY: ${{ (inputs.mode == 'single-c' || inputs.mode == 'tail-c' || inputs.mode == 'tail-native-c' || inputs.mode == 'tail-product-c') && '1' || '0' }}
           FIXTURE_SHA256: ${{ inputs.fixture_sha }}
           VT_CONTROL_SHA256: ${{ vars.VT_CONTROL_SHA256 }}
           VT_CONTROL_URL: ${{ secrets.VT_CONTROL_URL }}
