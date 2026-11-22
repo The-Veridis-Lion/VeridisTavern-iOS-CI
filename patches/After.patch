@@ -1572,76 +1572,32 @@ index ceab111aefd84be5f0ccd14f23ce67f42089576b..1feec54d3ed51d3ca1ed150d8a4c86ea
  test('saving during current-chat deletion preserves the replacement and original character ownership', async () => {
      await reset('character');
      await openExplicit('target-chat');
-diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 3a02cabcc4c229fe1daec0a1f4a8b30b5a3868ae..6860f91599df9650a2303ed7d0e753cf1d354a8f 100644
---- a/pnpm-lock.yaml
-+++ b/pnpm-lock.yaml
-@@ -8,6 +8,7 @@ overrides:
-   lodash-es: 4.18.1
+diff --git a/src-tauri/crates/tauritavern/src/presentation/commands/bridge.rs b/src-tauri/crates/tauritavern/src/presentation/commands/bridge.rs
+--- a/src-tauri/crates/tauritavern/src/presentation/commands/bridge.rs
++++ b/src-tauri/crates/tauritavern/src/presentation/commands/bridge.rs
+@@ -193,12 +193,22 @@
+     Ok(normalize_notification_permission_state(current_state))
+ }
  
- patchedDependencies:
-+  showdown@2.1.0: d71604cdc9326f918192eaee21de84bbcfb0f75ec6f73f4dfad50106ac524d34
-   style-mod@4.1.3: d084c85302b981e803483ab3d52c410b7096207c020df42692db46e7d1b70eb7
+-#[tauri::command(async)]
+-pub fn get_notification_permission_state(
++#[tauri::command]
++pub async fn get_notification_permission_state(
+     app: tauri::AppHandle,
+ ) -> Result<NotificationPermissionStateDto, CommandError> {
+     log_command("get_notification_permission_state");
+-    get_notification_permission_state_inner(&app)
++    // The iOS notification plugin blocks its caller until the system replies.
++    #[cfg(target_os = "ios")]
++    let result = tauri::async_runtime::spawn_blocking(move || {
++        get_notification_permission_state_inner(&app)
++    })
++    .await
++    .map_err(|error| CommandError::InternalServerError(error.to_string()))?;
++
++    #[cfg(not(target_os = "ios"))]
++    let result = get_notification_permission_state_inner(&app);
++    result
+ }
  
- importers:
-@@ -100,7 +101,7 @@ importers:
-         version: 3.0.5
-       showdown:
-         specifier: ^2.1.0
--        version: 2.1.0
-+        version: 2.1.0(patch_hash=d71604cdc9326f918192eaee21de84bbcfb0f75ec6f73f4dfad50106ac524d34)
-       yaml:
-         specifier: ^2.8.3
-         version: 2.8.3
-@@ -3810,7 +3811,7 @@ snapshots:
- 
-   shebang-regex@3.0.0: {}
- 
--  showdown@2.1.0:
-+  showdown@2.1.0(patch_hash=d71604cdc9326f918192eaee21de84bbcfb0f75ec6f73f4dfad50106ac524d34):
-     dependencies:
-       commander: 9.5.0
- 
-diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
-index 2c120dd446069768722c53cc607bf04c18b4939f..5b1acff82eb8c71d9c379e352df57b18929ebce7 100644
---- a/pnpm-workspace.yaml
-+++ b/pnpm-workspace.yaml
-@@ -20,4 +20,5 @@ minimumReleaseAge: 0
- overrides:
-   lodash-es: 4.18.1
- patchedDependencies:
-+  showdown@2.1.0: patches/showdown@2.1.0.patch
-   style-mod@4.1.3: patches/style-mod@4.1.3.patch
-diff --git a/patches/showdown@2.1.0.patch b/patches/showdown@2.1.0.patch
-new file mode 100644
-index 0000000000000000000000000000000000000000..c00b3f76cbac0c36e86af86b30ea66f85750f7d0
---- /dev/null
-+++ b/patches/showdown@2.1.0.patch
-@@ -0,0 +1,27 @@
-+diff --git a/dist/showdown.js b/dist/showdown.js
-+index 0607f73f771ce754b0283156ea49cd9fcc363918..5f5a5730024c06dbf117f050325247b73a8d0650 100644
-+--- a/dist/showdown.js
-++++ b/dist/showdown.js
-+@@ -3519,8 +3519,20 @@
-+     });
-+   }
-+ 
-+-  // hash HTML Blocks
-+-  for (var i = 0; i < blockTags.length; ++i) {
-++  // A block opener may follow up to three ASCII spaces from a line start.
-++  var hasBlockOpener = typeof text !== 'string';
-++  for (var angle = hasBlockOpener ? -1 : text.indexOf('<'); angle !== -1; angle = text.indexOf('<', angle + 1)) {
-++    var before = angle - 1;
-++    while (before >= 0 && angle - before <= 3 && text.charCodeAt(before) === 32) {
-++      --before;
-++    }
-++    var char = text.charCodeAt(before);
-++    if (before < 0 || char === 10 || char === 13 || char === 0x2028 || char === 0x2029) {
-++      hasBlockOpener = true;
-++      break;
-++    }
-++  }
-++  for (var i = 0; hasBlockOpener && i < blockTags.length; ++i) {
-+ 
-+     var opTagPos,
-+         rgx1     = new RegExp('^ {0,3}(<' + blockTags[i] + '\\b[^>]*>)', 'im'),
+ #[tauri::command(async)]
