@@ -9,7 +9,7 @@ from urllib.request import urlopen
 from zipfile import ZIP_DEFLATED, ZipFile
 
 
-FRAME_REPORTS = tuple(f"{variant}-{kind}.json" for variant in ("M2", "After", "ListenerFix") for kind in ("frames", "verdict"))
+FRAME_REPORTS = tuple(f"{variant}-{kind}.json" for variant in ("M2", "After", "ListenerFix", "StreamTrial") for kind in ("frames", "verdict"))
 
 
 def unpack(archive, destination):
